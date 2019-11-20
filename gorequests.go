@@ -5,17 +5,27 @@ import (
 	"bytes"
 			"io/ioutil"
 	"strings"
-	"fmt"
-	)
+		"encoding/base64"
+	"encoding/json"
+)
 
 // wrapper of common web request.
 type (
 	// Request
 	Request struct {
+		/** GET/POST  **/
 		method string
 		url string
+		/**  extra http header **/
 		headers map[string]string
-		body map[string]string
+
+		/** Content-Type=application/x-www-form-urlencoded, values in form always be `map[string][string]`  **/
+		form map[string]string
+
+		/** multipart style post payload parameters. maybe `map[string]interface{}` **/
+		body map[string]interface{}
+
+		/**basic http authorization **/
 		auth BasicAuth
 	}
 	// Response
@@ -47,9 +57,18 @@ func (this *Request) Headers(headers map[string]string) *Request {
 	return this
 }
 
-func (this *Request) Body(payload map[string]string) *Request {
+// special for header with `Content-Type=application/json`, it should never be used if `Request.Form` called.
+func (this *Request) Body(payload map[string]interface{}) *Request {
 	if payload != nil {
 		this.body = payload
+	}
+	return this
+}
+
+// special for header with `Content-Type=application/x-www-form-urlencoded`, it should never be used if `Request.Body` called.
+func (this *Request)Form(form map[string]string) *Request {
+	if form != nil {
+		this.form = form
 	}
 	return this
 }
@@ -68,31 +87,50 @@ func (this *Request) BasicAuth(username, password string) *Request {
 func (this *Request) DoRequest() (*Response, error) {
 	// handle body data
 	body := bytes.NewBuffer(nil)
-	payload := ""
-	if len(this.body) != 0 {
-		for key, value := range this.body {
-			body.WriteString(key + "=" + value + "&")
+	var payload string
+
+	// for Content-Type = application/x-www-form-urlencoded
+	if strings.ToLower(this.method) == "post" && this.form != nil {
+		this.headers["Content-Type"] = "application/x-www-form-urlencoded"
+		if len(this.form) != 0 {
+			for key, value := range this.form {
+				body.WriteString(key + "=" + value + "&")
+			}
+			// trim the last `&`
+			payload = strings.TrimRight(body.String(), "&")
 		}
-		// trim the last `&`
-		payload = strings.TrimRight(body.String(), "&")
 	}
-	// the third format must be `xxx=yyy&zzz=aaa&...`
+
+	// for Content-Type = application/json
+	if strings.ToLower(this.method) == "post" && this.body != nil {
+		this.headers["Content-Type"] = "application/json"
+		if len(this.body) != 0 {
+			marshalBytes, err := json.Marshal(this.body)
+			if err != nil {
+				return nil, err
+			}
+			payload = string(marshalBytes)
+		}
+	}
+
+	// init the http client.
 	req, err := http.NewRequest(this.method, this.url, strings.NewReader(payload))
 	if err != nil {
 		return nil, err
 	}
-	// POST need to set the header['Content-Type'] = 'application/x-www-form-urlencoded'
-	if strings.ToLower(this.method) == "post" && this.body != nil {
-		this.headers["Content-Type"] = "application/x-www-form-urlencoded"
+
+	// set the basic Authorization
+	if this.auth.username != "" && this.auth.password != "" {
+		req.SetBasicAuth(this.auth.username, this.auth.password)
+		req.Header.Add("Authorization", "Basic " + base64.StdEncoding.EncodeToString([]byte(this.auth.username + ":" + this.auth.password)))
 	}
-	// apply headers to request.header
+
+	// apply headers to request.Header
 	if this.headers != nil {
 		for key, value := range this.headers {
-			// todo what the difference of Add and Set ?
 			req.Header.Set(key, value)
 		}
 	}
-	fmt.Println(req.Header)
 	// create proxy to handle request
 	client := &http.Client{}
 	resp, err := client.Do(req)
